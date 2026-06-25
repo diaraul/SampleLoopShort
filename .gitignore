@@ -1,0 +1,12 @@
+# IDE configuration files
+.idea/
+
+# Python caching
+__pycache__/
+*.pyc
+
+# Virtual environments
+loopvenv/
+
+# Generated loop outputs
+output/

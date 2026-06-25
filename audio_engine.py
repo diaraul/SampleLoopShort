@@ -10,8 +10,8 @@ Responsibilities:
       to the millisecond beat grid (no rhythmic drift).
     - Apply short linear crossfades at every slice boundary -- including
       the loop's own wrap-point -- to eliminate clicks/pops.
-    - Implement the VariationEngine: five distinct algorithmic strategies
-      for generating catchy, seamless 32-beat loop configurations (10-20 seconds).
+    - Implement the VariationEngine: algorithmic strategies tuned for
+      mellow, Alchemist-inspired hip-hop 32-beat loop configurations.
 
 This module has no I/O-path or CLI concerns -- it is a pure processing
 library. Entry-point behavior (where files come from, where they go)
@@ -231,16 +231,19 @@ def fade_edges(segment: AudioSegment, ms: int = CROSSFADE_MS) -> AudioSegment:
 class VariationEngine:
     """
     Generates distinct 32-beat loop configurations from a BeatGrid using
-    five different compositional strategies:
+    compositional layouts structured to match a mellow, Alchemist hip-hop pocket:
 
-        1. Swapper            - keeps beats 1 & 3 standard over long phrases,
-                                  swaps 2 & 4 with high-energy donor slices.
-        2. Stutter/Syncopator  - plays naturally for bars, then subdivides final
-                                  phrase turn-arounds into a triplet machine-gun bounce.
-        3. Textural Flip       - maps structural chops from the later half of the song
-                                  alternating back-and-forth over the intro grid timeline.
-        4 & 5. Algorithmic Chaos - randomized, rhythmically-stable
-                                  permutations of clean transient slices.
+        1. Swapper            - keeps structural foundations standard; swaps backbeats
+                                  with smooth, high-energy soul elements.
+        2. Syncopator A       - rolling natural flow with a clean MPC-style double-trigger
+                                  pad hit right before the phrase turnaround point.
+        3. Syncopator B       - classic vinyl-feel triplet swing turnaround at
+                                  phrase boundaries while keeping the core groove static.
+        4. Textural Flip A    - alternates 4-beat structural blocks from the song's later
+                                  half to form an evolving melodic bridge structure.
+        5. Textural Flip B    - maps chunks in broad 8-beat soul blocks to keep vintage
+                                  vocal lines or jazz loops completely intact and un-chopped.
+        6. Algorithmic Chaos  - randomized layout pulling from steady transient pockets.
     """
 
     def __init__(self, grid: BeatGrid):
@@ -259,9 +262,9 @@ class VariationEngine:
         chosen_indices = []
         for b in range(BEATS_PER_LOOP):
             if b % 4 == 1 or b % 4 == 3:
-                # Target the high-energy pool to fill the structural snare/backbeat points
+                # Target a smooth, high-energy pool to fill the backbeat points for an Alchemist style pocket
                 high_energy_pool = sorted(range(self.grid.n_beats), key=lambda x: self.grid.beat_energy[x],
-                                          reverse=True)[:15]
+                                          reverse=True)[:10]
                 chosen_indices.append(random.choice(high_energy_pool))
             else:
                 chosen_indices.append(b % self.grid.n_beats)
@@ -269,19 +272,36 @@ class VariationEngine:
         slices = [fade_edges(self.grid.slice_beat(i)) for i in chosen_indices]
         return self.add_background_drums(stitch_with_crossfade(slices))
 
-    # ---- Variation 2: The Stutter / Syncopator ----
-    def variation_stutter(self) -> AudioSegment:
+    # ---- Variation 2: The Syncopator A (MPC Style Double-Trigger) ----
+    def variation_syncopator_a(self) -> AudioSegment:
         """
-        Plays naturally for the majority of the long phrase, then grabs ending
-        phrase sections and cuts them into syncopated triplet-feel subdivisions
-        for an engaging rhythmic turnaround drop.
+        Mellow Alchemist vibe: plays naturally, then creates a clean MPC-style
+        double-trigger chop (divided by 2) at the end of the phrase turnaround.
         """
         slices = []
         for b in range(BEATS_PER_LOOP):
-            if b % 16 >= 12 and b % 16 < 15:  # Trigger a triplet turnaround at structural phrase breaks
+            if b % 16 == 14:  # Clean half-beat pad re-trigger right before the phrase loops
                 dur = self.grid.beat_duration_ms(b % self.grid.n_beats)
                 start = self.grid.beat_times_ms[b % self.grid.n_beats]
-                subdivision = max(dur // 3, 10)  # split into 3 equal parts
+                subdivision = max(dur // 2, 10)
+                slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
+                slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
+            else:
+                slices.append(fade_edges(self.grid.slice_beat(b % self.grid.n_beats)))
+        return self.add_background_drums(stitch_with_crossfade(slices))
+
+    # ---- Variation 3: The Syncopator B (Triplet Bounce Turnaround) ----
+    def variation_syncopator_b(self) -> AudioSegment:
+        """
+        Plays naturally, then delivers a smooth vinyl-style triplet turnaround
+        at the phrase boundaries for a classic laid-back boom-bap bounce.
+        """
+        slices = []
+        for b in range(BEATS_PER_LOOP):
+            if b % 16 >= 12 and b % 16 < 15:
+                dur = self.grid.beat_duration_ms(b % self.grid.n_beats)
+                start = self.grid.beat_times_ms[b % self.grid.n_beats]
+                subdivision = max(dur // 3, 10)
                 slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
                 slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
                 slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
@@ -289,12 +309,11 @@ class VariationEngine:
                 slices.append(fade_edges(self.grid.slice_beat(b % self.grid.n_beats)))
         return self.add_background_drums(stitch_with_crossfade(slices))
 
-    # ---- Variation 3: The Textural Flip ----
-    def variation_textural_flip(self) -> AudioSegment:
+    # ---- Variation 4: The Textural Flip A (4-Beat Block Swap) ----
+    def variation_textural_flip_a(self) -> AudioSegment:
         """
-        Maps structural chops from the LATER half of the song onto the
-        rhythmic grid in alternating 4-beat blocks, creating an evolving
-        verse-to-chorus structural hybrid loop.
+        Maps structural chops from the later half of the song onto the
+        rhythmic grid in alternating 4-beat blocks, preserving longer melodic phrasing.
         """
         slices = []
         midpoint = self.grid.n_beats // 2 if self.grid.n_beats > 1 else 0
@@ -306,7 +325,23 @@ class VariationEngine:
             slices.append(fade_edges(self.grid.slice_beat(idx)))
         return self.add_background_drums(stitch_with_crossfade(slices))
 
-    # ---- Variation 4 & 5: Algorithmic Chaos ----
+    # ---- Variation 5: The Textural Flip B (8-Beat Soul Block Swap) ----
+    def variation_textural_flip_b(self) -> AudioSegment:
+        """
+        Alchemist soul-sample style: maps chops in larger 8-beat structural blocks
+        to keep vintage vocal or jazz expressions completely intact and easy to loop over.
+        """
+        slices = []
+        midpoint = self.grid.n_beats // 2 if self.grid.n_beats > 1 else 0
+        for b in range(BEATS_PER_LOOP):
+            if b % 16 >= 8 and midpoint > 0:
+                idx = (midpoint + b) % self.grid.n_beats
+            else:
+                idx = b % self.grid.n_beats
+            slices.append(fade_edges(self.grid.slice_beat(idx)))
+        return self.add_background_drums(stitch_with_crossfade(slices))
+
+    # ---- Variation 6: Algorithmic Chaos ----
     def variation_chaos(self, energy_threshold_percentile: float = 40.0) -> AudioSegment:
         """
         Randomized but rhythmically-stable permutation: selects 32 beats
@@ -327,7 +362,7 @@ class VariationEngine:
 
     def generate_all(self) -> List[Tuple[str, AudioSegment]]:
         """
-        Runs all five strategies and returns a list of (name, AudioSegment)
+        Runs all six strategies and returns a list of (name, AudioSegment)
         pairs. Individual strategy failures are logged and skipped rather
         than aborting the whole batch.
         """
@@ -335,10 +370,11 @@ class VariationEngine:
 
         strategies = [
             ("variation_1_swapper", self.variation_swapper),
-            ("variation_2_stutter_syncopator", self.variation_stutter),
-            ("variation_3_textural_flip", self.variation_textural_flip),
-            ("variation_4_chaos_a", self.variation_chaos),
-            ("variation_5_chaos_b", self.variation_chaos),  # independent random draw
+            ("variation_2_syncopator_a", self.variation_syncopator_a),
+            ("variation_3_syncopator_b", self.variation_syncopator_b),
+            ("variation_4_textural_flip_a", self.variation_textural_flip_a),
+            ("variation_5_textural_flip_b", self.variation_textural_flip_b),
+            ("variation_6_chaos", self.variation_chaos),
         ]
 
         for name, fn in strategies:
