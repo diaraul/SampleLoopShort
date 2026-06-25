@@ -1,0 +1,23 @@
+# requirements.txt
+# ------------------------------------------------------------------
+# Automated Audio-Chopper & Loop-Rearranger -- Python dependencies
+#
+# Versions are floor-pinned (>=) rather than exact-pinned so the repo
+# stays installable across Python 3.9-3.12 and across platforms.
+# Tested against the version ranges below as of mid-2026.
+#
+# NOTE: pydub additionally requires the ffmpeg binary to be available
+# on your system PATH for non-WAV formats (mp3, ogg, flac, etc.) and
+# for loading compressed source files. ffmpeg is NOT a pip package --
+# install it via your OS package manager:
+#   macOS:           brew install ffmpeg
+#   Ubuntu/Debian:    sudo apt-get install ffmpeg
+#   Windows:           https://ffmpeg.org/download.html (add to PATH)
+# ------------------------------------------------------------------
+
+numpy>=1.24.0
+librosa>=0.10.1
+pydub>=0.25.1
+soundfile>=0.12.1
+numba>=0.58.0
+scipy>=1.11.0
