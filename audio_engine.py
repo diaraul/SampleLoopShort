@@ -11,7 +11,7 @@ Responsibilities:
     - Apply short linear crossfades at every slice boundary -- including
       the loop's own wrap-point -- to eliminate clicks/pops.
     - Implement the VariationEngine: five distinct algorithmic strategies
-      for generating catchy, seamless 4-beat loop configurations.
+      for generating catchy, seamless 32-beat loop configurations (10-20 seconds).
 
 This module has no I/O-path or CLI concerns -- it is a pure processing
 library. Entry-point behavior (where files come from, where they go)
@@ -34,7 +34,7 @@ log = logging.getLogger("audio_engine")
 # Module-level configuration (tunable constants)
 # --------------------------------------------------------------------------
 CROSSFADE_MS = 4            # anti-pop crossfade length (spec range: 2-5ms)
-BEATS_PER_LOOP = 4
+BEATS_PER_LOOP = 32         # Expanded to 32 beats for 10-20 second loop generation
 SAMPLE_RATE = 44100          # librosa analysis sample rate
 
 
@@ -109,11 +109,10 @@ class BeatGrid:
         # librosa can return tempo as a 0-d numpy array depending on version
         self.bpm = float(np.atleast_1d(tempo)[0])
 
-        if self.bpm <= 0 or len(beat_frames) < BEATS_PER_LOOP + 1:
+        if self.bpm <= 0 or len(beat_frames) < 4:
             raise BeatGridError(
                 f"Insufficient beat grid (BPM={self.bpm:.1f}, "
-                f"beats found={len(beat_frames)}). Need at least "
-                f"{BEATS_PER_LOOP + 1} beats to build 4-beat loops safely."
+                f"beats found={len(beat_frames)})."
             )
 
         beat_times_sec = librosa.frames_to_time(beat_frames, sr=sr)
@@ -231,110 +230,86 @@ def fade_edges(segment: AudioSegment, ms: int = CROSSFADE_MS) -> AudioSegment:
 # --------------------------------------------------------------------------
 class VariationEngine:
     """
-    Generates distinct 4-beat loop configurations from a BeatGrid using
+    Generates distinct 32-beat loop configurations from a BeatGrid using
     five different compositional strategies:
 
-        1. Swapper            - keeps beats 1 & 3, swaps 2 & 4 with
-                                  high-energy donor slices.
-        2. Stutter/Syncopator  - subdivides one transient beat into a
-                                  triplet bounce, capped by a clean beat.
-        3. Textural Flip       - maps later-song energy onto the intro's
-                                  rhythmic grid.
+        1. Swapper            - keeps beats 1 & 3 standard over long phrases,
+                                  swaps 2 & 4 with high-energy donor slices.
+        2. Stutter/Syncopator  - plays naturally for bars, then subdivides final
+                                  phrase turn-arounds into a triplet machine-gun bounce.
+        3. Textural Flip       - maps structural chops from the later half of the song
+                                  alternating back-and-forth over the intro grid timeline.
         4 & 5. Algorithmic Chaos - randomized, rhythmically-stable
                                   permutations of clean transient slices.
     """
 
     def __init__(self, grid: BeatGrid):
         self.grid = grid
-        if grid.n_beats < BEATS_PER_LOOP + 1:
-            raise BeatGridError(
-                "Not enough beats in track to safely generate 4-beat loops "
-                "with donor material outside the base grid."
-            )
-        # Reserve beats [0..3] as "the standard intro grid" baseline,
-        # and treat everything else as donor material for swaps/textures.
-        self.base_indices = list(range(min(BEATS_PER_LOOP, grid.n_beats)))
-        self.donor_pool = [i for i in range(grid.n_beats) if i not in self.base_indices]
+
+    def add_background_drums(self, foreground_loop: AudioSegment) -> AudioSegment:
+        """Helper to overlay an optional instrumental backing track loop if needed."""
+        return foreground_loop
 
     # ---- Variation 1: The Swapper ----
     def variation_swapper(self) -> AudioSegment:
         """
-        Keeps beats 1 & 3 (indices 0, 2) standard; swaps beats 2 & 4
-        (indices 1, 3) with high-energy donor slices from elsewhere.
+        Keeps beats 1 & 3 standard over an extended timeline; swaps beats 2 & 4
+        with high-energy donor slices dynamically chosen from elsewhere in the track.
         """
-        donors = self.grid.high_energy_indices(exclude=set(self.base_indices), top_n=10)
-        if len(donors) < 2:
-            donors = self.donor_pool[:2] if len(self.donor_pool) >= 2 else self.base_indices[:2]
+        chosen_indices = []
+        for b in range(BEATS_PER_LOOP):
+            if b % 4 == 1 or b % 4 == 3:
+                # Target the high-energy pool to fill the structural snare/backbeat points
+                high_energy_pool = sorted(range(self.grid.n_beats), key=lambda x: self.grid.beat_energy[x],
+                                          reverse=True)[:15]
+                chosen_indices.append(random.choice(high_energy_pool))
+            else:
+                chosen_indices.append(b % self.grid.n_beats)
 
-        random.shuffle(donors)
-        swap_beat2 = donors[0] if len(donors) > 0 else self.base_indices[1]
-        swap_beat4 = donors[1] if len(donors) > 1 else self.base_indices[3]
-
-        chosen = [
-            self.base_indices[0],   # beat 1 - standard
-            swap_beat2,               # beat 2 - high-energy swap
-            self.base_indices[2],   # beat 3 - standard
-            swap_beat4,               # beat 4 - high-energy swap
-        ]
-        slices = [fade_edges(self.grid.slice_beat(i)) for i in chosen]
-        return stitch_with_crossfade(slices)
+        slices = [fade_edges(self.grid.slice_beat(i)) for i in chosen_indices]
+        return self.add_background_drums(stitch_with_crossfade(slices))
 
     # ---- Variation 2: The Stutter / Syncopator ----
     def variation_stutter(self) -> AudioSegment:
         """
-        Takes one strong transient beat and subdivides it into a
-        triplet-feel stutter, repeated to fill most of the 4-beat loop,
-        then capped off with a standard beat for grid resolution.
+        Plays naturally for the majority of the long phrase, then grabs ending
+        phrase sections and cuts them into syncopated triplet-feel subdivisions
+        for an engaging rhythmic turnaround drop.
         """
-        donors = self.grid.high_energy_indices(exclude=set(), top_n=5)
-        stutter_idx = donors[0] if donors else self.base_indices[0]
-
-        full_dur = self.grid.beat_duration_ms(stutter_idx)
-        start_ms = self.grid.beat_times_ms[stutter_idx]
-
-        # Split the beat into a triplet (3 equal subdivisions) for a
-        # syncopated bounce feel.
-        third = max(full_dur // 3, 10)  # guard against degenerate tiny beats
-        stutter_unit = fade_edges(self.grid.slice_ms(start_ms, third))
-
-        # Build: stutter, stutter, stutter, [standard closing beat]
-        closing_idx = self.base_indices[-1]
-        closing_beat = fade_edges(self.grid.slice_beat(closing_idx))
-
-        slices = [stutter_unit, stutter_unit, stutter_unit, closing_beat]
-        return stitch_with_crossfade(slices)
+        slices = []
+        for b in range(BEATS_PER_LOOP):
+            if b % 16 >= 12 and b % 16 < 15:  # Trigger a triplet turnaround at structural phrase breaks
+                dur = self.grid.beat_duration_ms(b % self.grid.n_beats)
+                start = self.grid.beat_times_ms[b % self.grid.n_beats]
+                subdivision = max(dur // 3, 10)  # split into 3 equal parts
+                slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
+                slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
+                slices.append(fade_edges(self.grid.slice_ms(start, subdivision)))
+            else:
+                slices.append(fade_edges(self.grid.slice_beat(b % self.grid.n_beats)))
+        return self.add_background_drums(stitch_with_crossfade(slices))
 
     # ---- Variation 3: The Textural Flip ----
     def variation_textural_flip(self) -> AudioSegment:
         """
         Maps structural chops from the LATER half of the song onto the
-        intro's rhythmic grid -- same beat-count/timing, different
-        textural content (e.g. drop/chorus energy over verse rhythm).
+        rhythmic grid in alternating 4-beat blocks, creating an evolving
+        verse-to-chorus structural hybrid loop.
         """
-        half_point = self.grid.n_beats // 2
-        later_half = list(range(half_point, self.grid.n_beats))
-
-        if len(later_half) < BEATS_PER_LOOP:
-            # Track too short to have a distinct "later half" -- fall back
-            # to the highest-energy beats available anywhere.
-            chosen = self.grid.high_energy_indices(top_n=BEATS_PER_LOOP)
-            while len(chosen) < BEATS_PER_LOOP:
-                chosen.append(chosen[-1] if chosen else 0)
-        else:
-            # Rank later-half beats by energy, take the top 4, but keep
-            # them in chronological order so the grid still "flows".
-            ranked_later = sorted(
-                later_half, key=lambda i: self.grid.beat_energy[i], reverse=True
-            )[:BEATS_PER_LOOP]
-            chosen = sorted(ranked_later)
-
-        slices = [fade_edges(self.grid.slice_beat(i)) for i in chosen]
-        return stitch_with_crossfade(slices)
+        slices = []
+        midpoint = self.grid.n_beats // 2 if self.grid.n_beats > 1 else 0
+        for b in range(BEATS_PER_LOOP):
+            if b % 8 >= 4 and midpoint > 0:
+                idx = (midpoint + b) % self.grid.n_beats
+            else:
+                idx = b % self.grid.n_beats
+            slices.append(fade_edges(self.grid.slice_beat(idx)))
+        return self.add_background_drums(stitch_with_crossfade(slices))
 
     # ---- Variation 4 & 5: Algorithmic Chaos ----
     def variation_chaos(self, energy_threshold_percentile: float = 40.0) -> AudioSegment:
         """
-        Randomized but rhythmically-stable permutation: selects 4 beats
+        Randomized but rhythmically-stable permutation: selects 32 beats
         from the pool of "clean transient" beats (above an energy
         percentile threshold, to avoid silence/noise-floor slices) in
         random order.
@@ -343,15 +318,12 @@ class VariationEngine:
         threshold = np.percentile(energies, energy_threshold_percentile)
         clean_pool = [i for i in range(self.grid.n_beats) if self.grid.beat_energy[i] >= threshold]
 
-        if len(clean_pool) < BEATS_PER_LOOP:
+        if not clean_pool:
             clean_pool = list(range(self.grid.n_beats))  # fallback: use everything
 
-        chosen = random.sample(clean_pool, k=min(BEATS_PER_LOOP, len(clean_pool)))
-        while len(chosen) < BEATS_PER_LOOP:
-            chosen.append(random.choice(clean_pool))
-
+        chosen = [random.choice(clean_pool) for _ in range(BEATS_PER_LOOP)]
         slices = [fade_edges(self.grid.slice_beat(i)) for i in chosen]
-        return stitch_with_crossfade(slices)
+        return self.add_background_drums(stitch_with_crossfade(slices))
 
     def generate_all(self) -> List[Tuple[str, AudioSegment]]:
         """
